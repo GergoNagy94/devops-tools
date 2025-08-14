@@ -134,8 +134,10 @@ runs:
         while IFS= read -r -d '' file; do
             unit=$(basename "$(dirname "$file")")
             print_status "Processing: $unit"
+            print_status "File path: $file"
             
             source=$(extract_source "$file")
+            print_status "Source result: '$source'"
             [[ -z "$source" ]] && {
                 print_status "No source in $file, skipping"
                 continue
