@@ -77,7 +77,8 @@ runs:
                 local ref="${BASH_REMATCH[3]:-main}"
                 print_status "Extracted URL: $url, ref: $ref" >&2
                 local subpath=""
-                if [[ "$url" =~ ^(.+)//(.+)$ ]]; then
+                # Check for subpath (double slash not part of protocol)
+                if [[ "$url" =~ ^(https?://[^/]+/[^/]+/[^/]+)//(.+)$ ]]; then
                     url="${BASH_REMATCH[1]}"
                     subpath="${BASH_REMATCH[2]}"
                     print_status "Found subpath: $subpath, updated URL: $url" >&2
