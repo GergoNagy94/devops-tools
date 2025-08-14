@@ -43,7 +43,11 @@ runs:
         
         [[ ! -d "$ENVIRONMENT" ]] && { echo "[ERROR] Directory '$ENVIRONMENT' not found."; exit 1; }
         
-        OUTPUT_FILE="$ENVIRONMENT/terraform-versions-$ENV_BASENAME$([[ $OUTDATED_ONLY == true ]] && echo '-outdated').yml"
+        if [[ "$OUTDATED_ONLY" == "true" ]]; then
+            OUTPUT_FILE="$ENVIRONMENT/terraform-versions-$ENV_BASENAME-outdated.yml"
+        else
+            OUTPUT_FILE="$ENVIRONMENT/terraform-versions-$ENV_BASENAME.yml"
+        fi
 
         extract_source() {
             grep -E '^\s*source\s*=' "$1" | grep -o '"[^"]*"' | tr -d '"' | head -1
