@@ -35,129 +35,68 @@ runs:
       id: generate
       shell: bash
       run: |
-        #!/bin/bash
         set -euo pipefail
-
-        print_status() { echo "[INFO] $1"; }
-        print_error() { echo "[ERROR] $1"; }
-        print_success() { echo "[SUCCESS] $1"; }
 
         ENVIRONMENT="${{ inputs.environment }}"
         OUTDATED_ONLY="${{ inputs.outdated-only }}"
-
-        if [[ ! -d "$ENVIRONMENT" ]]; then
-            print_error "Directory '$ENVIRONMENT' not found."
-            exit 1
-        fi
-
         ENV_BASENAME=$(basename "$ENVIRONMENT")
-        if [[ "$OUTDATED_ONLY" == "true" ]]; then
-            OUTPUT_FILE="$ENVIRONMENT/terraform-versions-$ENV_BASENAME-outdated.yml"
-        else
-            OUTPUT_FILE="$ENVIRONMENT/terraform-versions-$ENV_BASENAME.yml"
-        fi
+        
+        [[ ! -d "$ENVIRONMENT" ]] && { echo "[ERROR] Directory '$ENVIRONMENT' not found."; exit 1; }
+        
+        OUTPUT_FILE="$ENVIRONMENT/terraform-versions-$ENV_BASENAME$([[ $OUTDATED_ONLY == true ]] && echo '-outdated').yml"
 
-        print_status "Generating report for environment: $ENVIRONMENT"
-        print_status "Output file: $OUTPUT_FILE"
-
-        # Extract source from terragrunt.hcl files
         extract_source() {
-            local result
-            result=$(grep -E '^\s*source\s*=' "$1" | grep -o '"[^"]*"' | tr -d '"' | head -1)
-            print_status "Extracted source from file: '$result'" >&2
-            echo "$result"
+            grep -E '^\s*source\s*=' "$1" | grep -o '"[^"]*"' | tr -d '"' | head -1
         }
 
-        # Parse git source URLs
         parse_git_source() {
             local source="$1"
-            print_status "Parsing git source: $source" >&2
             if [[ "$source" =~ ^git::([^?]+)(\?ref=(.+))?$ ]]; then
-                local url="${BASH_REMATCH[1]}"
-                local ref="${BASH_REMATCH[3]:-main}"
-                print_status "Extracted URL: $url, ref: $ref" >&2
-                local subpath=""
-                # Check for subpath (double slash not part of protocol)
+                local url="${BASH_REMATCH[1]}" ref="${BASH_REMATCH[3]:-main}" subpath=""
                 if [[ "$url" =~ ^(https?://[^/]+/[^/]+/[^/]+)//(.+)$ ]]; then
-                    url="${BASH_REMATCH[1]}"
-                    subpath="${BASH_REMATCH[2]}"
-                    print_status "Found subpath: $subpath, updated URL: $url" >&2
+                    url="${BASH_REMATCH[1]}" subpath="${BASH_REMATCH[2]}"
                 fi
                 echo "$url|$ref|$subpath"
             else
-                print_status "Git source parsing failed - no match" >&2
                 echo "||"
             fi
         }
 
-        # Get GitHub repo info from URL
-        get_github_repo_info() {
-            local url="$1"
-            if [[ "$url" =~ github\.com[:/]([^/]+)/([^/\.]+)(\.git)?$ ]]; then
-                echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
-            else
-                echo ""
-            fi
+        get_repo() {
+            [[ "$1" =~ github\.com[:/]([^/]+)/([^/\.]+)(\.git)?$ ]] && echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
         }
 
-        # Get latest version from GitHub API
-        get_latest_version() {
-            local repo="$1" current="$2"
-            local rel tag
+        get_latest() {
+            local repo="$1" current="$2" rel tag
             rel=$(curl -H "Authorization: Bearer $GITHUB_TOKEN" -s "https://api.github.com/repos/$repo/releases/latest" | jq -r '.tag_name // empty' 2>/dev/null)
-            if [[ -n "$rel" ]]; then
-                echo "$rel"
-                return
-            fi
+            [[ -n "$rel" ]] && echo "$rel" && return
             tag=$(curl -H "Authorization: Bearer $GITHUB_TOKEN" -s "https://api.github.com/repos/$repo/tags?per_page=1" | jq -r '.[0].name // empty' 2>/dev/null)
             echo "${tag:-$current}"
         }
 
-        # Compare versions
-        compare_versions() {
-            [[ "$1" == "$2" ]] && echo "up-to-date" || echo "outdated"
+        get_type() {
+            [[ "$1" =~ ^git:: ]] && echo "git" && return
+            [[ "$1" =~ ^\.\./ ]] && echo "local" && return
+            echo "unknown"
         }
 
-        # Determine module type
-        get_module_type() {
-            local src="$1"
-            if [[ "$src" =~ ^git:: ]]; then
-                echo "git"
-            elif [[ "$src" =~ ^\.\./ ]]; then
-                echo "local"
-            else
-                echo "unknown"
-            fi
-        }
-
-        # Scan terragrunt files and collect results
         results=()
         while IFS= read -r -d '' file; do
             unit=$(basename "$(dirname "$file")")
-            print_status "Processing: $unit"
-            print_status "File path: $file"
-            
             source=$(extract_source "$file")
-            print_status "Source result: '$source'"
-            [[ -z "$source" ]] && {
-                print_status "No source in $file, skipping"
-                continue
-            }
+            [[ -z "$source" ]] && continue
             
-            type=$(get_module_type "$source")
+            type=$(get_type "$source")
             
             if [[ $type == "git" ]]; then
-                IFS="|" read url current_version path <<<"$(parse_git_source "$source")"
-                repo=$(get_github_repo_info "$url")
+                IFS="|" read url current path <<<"$(parse_git_source "$source")"
+                repo=$(get_repo "$url")
                 if [[ -n "$repo" ]]; then
-                    print_status "Found GitHub repo: $repo"
-                    latest_version=$(get_latest_version "$repo" "$current_version")
-                    status=$(compare_versions "$current_version" "$latest_version")
-                    results+=("$unit|${repo}${path:+//${path}}|$current_version|$latest_version|$status|git")
-                    print_status "$unit: $current_version -> $latest_version ($status)"
+                    latest=$(get_latest "$repo" "$current")
+                    status=$([[ "$current" == "$latest" ]] && echo "up-to-date" || echo "outdated")
+                    results+=("$unit|${repo}${path:+//${path}}|$current|$latest|$status|git")
                 else
-                    print_status "Failed to parse GitHub repo from URL: $url"
-                    results+=("$unit|$url|$current_version|$current_version|up-to-date|git")
+                    results+=("$unit|$url|$current|$current|up-to-date|git")
                 fi
             elif [[ $type == "local" ]]; then
                 results+=("$unit|$(basename "$source")|local|local|up-to-date|local")
@@ -166,23 +105,16 @@ runs:
             fi
         done < <(find "$ENVIRONMENT" -name "terragrunt.hcl" -type f -print0)
 
-        # Filter outdated if requested
         if [[ "$OUTDATED_ONLY" == "true" ]]; then
-            filtered_results=()
+            filtered=()
             for result in "${results[@]}"; do
                 IFS='|' read -r unit mod cur lat stat type <<<"$result"
-                [[ "$stat" == "outdated" ]] && filtered_results+=("$result")
+                [[ "$stat" == "outdated" ]] && filtered+=("$result")
             done
-            if [[ ${#filtered_results[@]} -eq 0 ]]; then
-                print_success "All modules are up-to-date!"
-                echo "report-file=" >> $GITHUB_OUTPUT
-                echo "outdated-count=0" >> $GITHUB_OUTPUT
-                exit 0
-            fi
-            results=("${filtered_results[@]}")
+            [[ ${#filtered[@]} -eq 0 ]] && { echo "report-file=" >> $GITHUB_OUTPUT; echo "outdated-count=0" >> $GITHUB_OUTPUT; exit 0; }
+            results=("${filtered[@]}")
         fi
 
-        # Generate YAML report
         {
             echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S UTC')"
             echo "# Environment: $ENVIRONMENT"
@@ -202,15 +134,6 @@ runs:
             done
         } > "$OUTPUT_FILE"
 
-        # Count outdated modules
-        outdated_count=0
-        if grep -q "status: \"outdated\"" "$OUTPUT_FILE" 2>/dev/null; then
-            outdated_count=$(grep -c "status: \"outdated\"" "$OUTPUT_FILE")
-        fi
-
-        print_success "Report generated: $OUTPUT_FILE"
-        print_success "Outdated modules: $outdated_count"
-
-        # Set outputs
+        outdated_count=$(grep -c "status: \"outdated\"" "$OUTPUT_FILE" 2>/dev/null || echo 0)
         echo "report-file=$OUTPUT_FILE" >> $GITHUB_OUTPUT
         echo "outdated-count=$outdated_count" >> $GITHUB_OUTPUT
