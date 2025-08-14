@@ -71,20 +71,20 @@ runs:
         # Parse git source URLs
         parse_git_source() {
             local source="$1"
-            print_status "Parsing git source: $source"
+            print_status "Parsing git source: $source" >&2
             if [[ "$source" =~ ^git::([^?]+)(\?ref=(.+))?$ ]]; then
                 local url="${BASH_REMATCH[1]}"
                 local ref="${BASH_REMATCH[3]:-main}"
-                print_status "Extracted URL: $url, ref: $ref"
+                print_status "Extracted URL: $url, ref: $ref" >&2
                 local subpath=""
                 if [[ "$url" =~ ^(.+)//(.+)$ ]]; then
                     url="${BASH_REMATCH[1]}"
                     subpath="${BASH_REMATCH[2]}"
-                    print_status "Found subpath: $subpath, updated URL: $url"
+                    print_status "Found subpath: $subpath, updated URL: $url" >&2
                 fi
                 echo "$url|$ref|$subpath"
             else
-                print_status "Git source parsing failed - no match"
+                print_status "Git source parsing failed - no match" >&2
                 echo "||"
             fi
         }
