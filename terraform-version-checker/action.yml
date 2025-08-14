@@ -1,0 +1,204 @@
+name: 'Terraform Module Version Checker'
+description: 'Check Terraform module versions in Terragrunt configurations'
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  environment:
+    description: 'Environment directory to scan'
+    required: true
+    default: 'units'
+  outdated-only:
+    description: 'Show only outdated modules'
+    required: false
+    default: 'false'
+
+outputs:
+  report-file:
+    description: 'Path to the generated report file'
+    value: ${{ steps.generate.outputs.report-file }}
+  outdated-count:
+    description: 'Number of outdated modules found'
+    value: ${{ steps.generate.outputs.outdated-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check dependencies
+      shell: bash
+      run: |
+        command -v curl >/dev/null 2>&1 || { echo "curl is required but not installed."; exit 1; }
+        command -v jq >/dev/null 2>&1 || { echo "jq is required but not installed."; exit 1; }
+
+    - name: Generate Terraform version report
+      id: generate
+      shell: bash
+      run: |
+        #!/bin/bash
+        set -euo pipefail
+
+        print_status() { echo "[INFO] $1"; }
+        print_error() { echo "[ERROR] $1"; }
+        print_success() { echo "[SUCCESS] $1"; }
+
+        ENVIRONMENT="${{ inputs.environment }}"
+        OUTDATED_ONLY="${{ inputs.outdated-only }}"
+
+        if [[ ! -d "$ENVIRONMENT" ]]; then
+            print_error "Directory '$ENVIRONMENT' not found."
+            exit 1
+        fi
+
+        ENV_BASENAME=$(basename "$ENVIRONMENT")
+        if [[ "$OUTDATED_ONLY" == "true" ]]; then
+            OUTPUT_FILE="$ENVIRONMENT/terraform-versions-$ENV_BASENAME-outdated.yml"
+        else
+            OUTPUT_FILE="$ENVIRONMENT/terraform-versions-$ENV_BASENAME.yml"
+        fi
+
+        print_status "Generating report for environment: $ENVIRONMENT"
+        print_status "Output file: $OUTPUT_FILE"
+
+        # Extract source from terragrunt.hcl files
+        extract_source() {
+            grep -E '^\s*source\s*=' "$1" | grep -o '"[^"]*"' | tr -d '"' | head -1
+        }
+
+        # Parse git source URLs
+        parse_git_source() {
+            local source="$1"
+            if [[ "$source" =~ ^git::([^?]+)(\?ref=(.+))?$ ]]; then
+                local url="${BASH_REMATCH[1]}"
+                local ref="${BASH_REMATCH[3]:-main}"
+                local subpath=""
+                if [[ "$url" =~ ^(.+)//(.+)$ ]]; then
+                    url="${BASH_REMATCH[1]}"
+                    subpath="${BASH_REMATCH[2]}"
+                fi
+                echo "$url|$ref|$subpath"
+            else
+                echo "||"
+            fi
+        }
+
+        # Get GitHub repo info from URL
+        get_github_repo_info() {
+            local url="$1"
+            if [[ "$url" =~ github\.com[:/]([^/]+)/([^/\.]+)(\.git)?$ ]]; then
+                echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+            else
+                echo ""
+            fi
+        }
+
+        # Get latest version from GitHub API
+        get_latest_version() {
+            local repo="$1" current="$2"
+            local rel tag
+            rel=$(curl -s "https://api.github.com/repos/$repo/releases/latest" | jq -r '.tag_name // empty' 2>/dev/null)
+            if [[ -n "$rel" ]]; then
+                echo "$rel"
+                return
+            fi
+            tag=$(curl -s "https://api.github.com/repos/$repo/tags?per_page=1" | jq -r '.[0].name // empty' 2>/dev/null)
+            echo "${tag:-$current}"
+        }
+
+        # Compare versions
+        compare_versions() {
+            [[ "$1" == "$2" ]] && echo "up-to-date" || echo "outdated"
+        }
+
+        # Determine module type
+        get_module_type() {
+            local src="$1"
+            if [[ "$src" =~ ^git:: ]]; then
+                echo "git"
+            elif [[ "$src" =~ ^\.\./ ]]; then
+                echo "local"
+            else
+                echo "unknown"
+            fi
+        }
+
+        # Scan terragrunt files and collect results
+        results=()
+        while IFS= read -r -d '' file; do
+            unit=$(basename "$(dirname "$file")")
+            print_status "Processing: $unit"
+            
+            source=$(extract_source "$file")
+            [[ -z "$source" ]] && {
+                print_status "No source in $file, skipping"
+                continue
+            }
+            
+            type=$(get_module_type "$source")
+            
+            if [[ $type == "git" ]]; then
+                IFS="|" read url current_version path <<<"$(parse_git_source "$source")"
+                repo=$(get_github_repo_info "$url")
+                if [[ -n "$repo" ]]; then
+                    latest_version=$(get_latest_version "$repo" "$current_version")
+                    status=$(compare_versions "$current_version" "$latest_version")
+                    results+=("$unit|${repo}${path:+//${path}}|$current_version|$latest_version|$status|git")
+                    print_status "$unit: $current_version -> $latest_version ($status)"
+                else
+                    results+=("$unit|$url|$current_version|$current_version|up-to-date|git")
+                fi
+            elif [[ $type == "local" ]]; then
+                results+=("$unit|$(basename "$source")|local|local|up-to-date|local")
+            else
+                results+=("$unit|$source|unknown|unknown|unknown|unknown")
+            fi
+        done < <(find "$ENVIRONMENT" -name "terragrunt.hcl" -type f -print0)
+
+        # Filter outdated if requested
+        if [[ "$OUTDATED_ONLY" == "true" ]]; then
+            filtered_results=()
+            for result in "${results[@]}"; do
+                IFS='|' read -r unit mod cur lat stat type <<<"$result"
+                [[ "$stat" == "outdated" ]] && filtered_results+=("$result")
+            done
+            if [[ ${#filtered_results[@]} -eq 0 ]]; then
+                print_success "All modules are up-to-date!"
+                echo "report-file=" >> $GITHUB_OUTPUT
+                echo "outdated-count=0" >> $GITHUB_OUTPUT
+                exit 0
+            fi
+            results=("${filtered_results[@]}")
+        fi
+
+        # Generate YAML report
+        {
+            echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "# Environment: $ENVIRONMENT"
+            echo "# Report Type: $([[ $OUTDATED_ONLY == true ]] && echo 'Outdated Only' || echo 'Full Report')"
+            echo ""
+            echo "terraform_modules:"
+            for result in "${results[@]}"; do
+                IFS='|' read -r unit module_name current latest status type <<<"$result"
+                echo "  - unit_name: \"$unit\""
+                echo "    module_name: \"$module_name\""
+                echo "    module_type: \"$type\""
+                echo "    current_version: \"$current\""
+                echo "    latest_version: \"$latest\""
+                echo "    status: \"$status\""
+                echo "    needs_update: $([[ $status == outdated ]] && echo true || echo false)"
+                echo ""
+            done
+        } > "$OUTPUT_FILE"
+
+        # Count outdated modules
+        outdated_count=0
+        if grep -q "status: \"outdated\"" "$OUTPUT_FILE" 2>/dev/null; then
+            outdated_count=$(grep -c "status: \"outdated\"" "$OUTPUT_FILE")
+        fi
+
+        print_success "Report generated: $OUTPUT_FILE"
+        print_success "Outdated modules: $outdated_count"
+
+        # Set outputs
+        echo "report-file=$OUTPUT_FILE" >> $GITHUB_OUTPUT
+        echo "outdated-count=$outdated_count" >> $GITHUB_OUTPUT
