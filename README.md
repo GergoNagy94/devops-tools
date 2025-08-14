@@ -1,6 +1,6 @@
-# Company GitHub Actions
+# DevOps Tools - GitHub Actions
 
-Custom GitHub Actions for our team's Terraform module management.
+Custom GitHub Actions for DevOps automation and infrastructure management.
 
 ## Terraform Module Version Checker
 
@@ -145,6 +145,135 @@ jobs:
 
 Only Git modules hosted on GitHub will have version checking via the GitHub API.
 
+## AWS Execution Role Setup
+
+Automates IAM role creation for Terragrunt deployments. GitHub Actions equivalent of `./make.sh dev.json`.
+
+### Usage
+
+**Create/update IAM role:**
+```yaml
+- uses: GergoNagy94/devops-tools/aws-execution-role@v1
+  with:
+    config-file: 'dev.json'
+```
+
+**Generate configuration template:**
+```yaml
+- uses: GergoNagy94/devops-tools/aws-execution-role@v1
+  with:
+    generate-template: true
+    account-id: '567749996660'
+    environment-name: 'dev'
+```
+
+### Configuration File (dev.json)
+
+```json
+{
+  "account_id": "567749996660",
+  "name": "dev",
+  "policies": {
+    "trust": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Principal": {
+            "AWS": ["arn:aws:iam::${account_id}:root"],
+            "Service": "vpc-flow-logs.amazonaws.com"
+          },
+          "Action": "sts:AssumeRole"
+        }
+      ]
+    },
+    "inline": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["acm:RequestCertificate", "acm:AddTagsToCertificate", "acm:DescribeCertificate", "acm:ListTagsForCertificate", "acm:DeleteCertificate"],
+          "Resource": ["arn:aws:acm:eu-west-2:${account_id}:certificate/*", "arn:aws:acm:eu-north-1:${account_id}:certificate/*"]
+        },
+        {
+          "Effect": "Allow", 
+          "Action": ["ecr:CreateRepository", "ecr:DeleteRepository", "ecr:TagResource", "ecr:DescribeRepositories", "ecr:ListTagsForResource", "ecr:SetRepositoryPolicy", "ecr:PutLifecyclePolicy", "ecr:GetRepositoryPolicy", "ecr:GetLifecyclePolicy", "ecr:DeleteLifecyclePolicy", "ecr:DeleteRepositoryPolicy"],
+          "Resource": ["arn:aws:ecr:eu-west-2:${account_id}:repository/*", "arn:aws:ecr:eu-north-1:${account_id}:repository/*"]
+        },
+        {
+          "Effect": "Allow",
+          "Action": ["eks:*"],
+          "Resource": ["arn:aws:eks:eu-west-2:${account_id}:*", "arn:aws:eks:eu-north-1:${account_id}:*"]
+        },
+        {
+          "Effect": "Allow",
+          "Action": ["iam:CreateRole", "iam:DeleteRole", "iam:PassRole", "iam:GetRole", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:TagRole", "iam:UntagRole", "iam:CreateServiceLinkedRole", "iam:AttachRolePolicy", "iam:ListInstanceProfilesForRole", "iam:DetachRolePolicy", "iam:PassRole", "iam:PutRolePolicy", "iam:GetRolePolicy", "iam:CreateOpenIDConnectProvider", "iam:DeleteRolePolicy", "iam:TagOpenIDConnectProvider", "iam:GetOpenIDConnectProvider", "iam:DeleteOpenIDConnectProvider", "iam:UpdateAssumeRolePolicy", "iam:CreateInstanceProfile", "iam:TagInstanceProfile", "iam:GetInstanceProfile", "iam:DeleteInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:DeleteServiceLinkedRole", "iam:GetServiceLinkedRoleDeletionStatus"],
+          "Resource": ["arn:aws:iam::${account_id}:role/*", "arn:aws:iam::${account_id}:oidc-provider/*", "arn:aws:iam::${account_id}:instance-profile/*"]
+        },
+        {
+          "Effect": "Allow",
+          "Action": ["s3:*"],
+          "Resource": "*"
+        }
+      ]
+    },
+    "managed": [
+      "arn:aws:iam::aws:policy/AmazonVPCFullAccess",
+      "arn:aws:iam::aws:policy/AmazonEC2FullAccess",
+      "arn:aws:iam::aws:policy/AmazonElastiCacheFullAccess",
+      "arn:aws:iam::aws:policy/CloudFrontFullAccess",
+      "arn:aws:iam::aws:policy/IAMFullAccess",
+      "arn:aws:iam::aws:policy/AmazonRDSFullAccess",
+      "arn:aws:iam::aws:policy/AmazonRoute53FullAccess",
+      "arn:aws:iam::aws:policy/AmazonSSMFullAccess",
+      "arn:aws:iam::aws:policy/AmazonMQFullAccess",
+      "arn:aws:iam::aws:policy/AmazonOpenSearchServiceFullAccess"
+    ]
+  }
+}
+```
+
+### How It Works
+
+Like the original `make.sh` script:
+1. Reads the JSON config file
+2. Replaces `${account_id}` placeholders
+3. Creates role if it doesn't exist
+4. Attaches managed policies (non-destructive)
+5. Updates inline policy
+
+### Example Workflow
+
+```yaml
+name: Setup AWS Execution Role
+
+on:
+  workflow_dispatch:
+    inputs:
+      config-file:
+        description: 'Path to config file (e.g., dev.json)'
+        required: true
+        default: 'dev.json'
+
+jobs:
+  setup-role:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Setup execution role
+        uses: GergoNagy94/devops-tools/aws-execution-role@v1
+        with:
+          config-file: ${{ github.event.inputs.config-file }}
+```
+
 ## Development
 
-This action is built as a composite action and can be tested locally or in GitHub Actions.
+These actions are built as composite actions and can be tested locally or in GitHub Actions workflows.

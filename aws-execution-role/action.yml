@@ -1,0 +1,216 @@
+name: 'AWS Execution Role Setup'
+description: 'Creates IAM execution roles with specified policies from configuration file'
+
+inputs:
+  config-file:
+    description: 'Path to the JSON configuration file (e.g., dev.json)'
+    required: false
+  role-name:
+    description: 'Name of the IAM role to create'
+    required: false
+    default: 'terragrunt-execution-role'
+  aws-region:
+    description: 'AWS region for operations'
+    required: false
+    default: 'us-east-1'
+  generate-template:
+    description: 'Generate template configuration file instead of creating role'
+    required: false
+    default: 'false'
+  account-id:
+    description: 'AWS Account ID (required when generating template)'
+    required: false
+  environment-name:
+    description: 'Environment name (required when generating template)'
+    required: false
+
+outputs:
+  role-arn:
+    description: 'ARN of the created/updated IAM role'
+    value: ${{ steps.setup.outputs.role-arn }}
+  role-name:
+    description: 'Name of the created/updated IAM role'
+    value: ${{ steps.setup.outputs.role-name }}
+  template-file:
+    description: 'Path to the generated template file (when generate-template is true)'
+    value: ${{ steps.generate.outputs.template-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate dependencies
+      shell: bash
+      run: |
+        command -v jq >/dev/null 2>&1 || { echo "jq is required but not installed."; exit 1; }
+        if [[ "${{ inputs.generate-template }}" != "true" ]]; then
+          command -v aws >/dev/null 2>&1 || { echo "AWS CLI is required but not installed."; exit 1; }
+        fi
+
+    - name: Generate template configuration
+      if: inputs.generate-template == 'true'
+      id: generate
+      shell: bash
+      run: |
+        #!/bin/bash
+        set -euo pipefail
+
+        print_status() { echo "[INFO] $1"; }
+        print_error() { echo "[ERROR] $1"; }
+        print_success() { echo "[SUCCESS] $1"; }
+
+        ACCOUNT_ID="${{ inputs.account-id }}"
+        ENV_NAME="${{ inputs.environment-name }}"
+        CONFIG_FILE="${{ inputs.config-file }}"
+
+        # Validate required inputs for template generation
+        if [[ -z "$ACCOUNT_ID" ]]; then
+          print_error "account-id is required when generate-template is true"
+          exit 1
+        fi
+
+        if [[ -z "$ENV_NAME" ]]; then
+          print_error "environment-name is required when generate-template is true"
+          exit 1
+        fi
+
+        # Set default config file if not provided
+        if [[ -z "$CONFIG_FILE" ]]; then
+          CONFIG_FILE="${ENV_NAME}.json"
+        fi
+
+        print_status "Generating template configuration file: $CONFIG_FILE"
+        print_status "Account ID: $ACCOUNT_ID"
+        print_status "Environment: $ENV_NAME"
+
+        ACTION_PATH="${{ github.action_path }}"
+        TEMPLATE_FILE="$ACTION_PATH/template.json"
+
+        if [[ ! -f "$TEMPLATE_FILE" ]]; then
+          print_error "Template file not found: $TEMPLATE_FILE"
+          exit 1
+        fi
+
+        cp "$TEMPLATE_FILE" "$CONFIG_FILE"
+        sed -i "s/REPLACE_WITH_ACCOUNT_ID/$ACCOUNT_ID/g" "$CONFIG_FILE"
+        sed -i "s/REPLACE_WITH_ENV_NAME/$ENV_NAME/g" "$CONFIG_FILE"
+
+        print_success "Template configuration file generated: $CONFIG_FILE"
+        print_status "You can now customize this file and use it with the action"
+        
+        # Set output
+        echo "template-file=$CONFIG_FILE" >> $GITHUB_OUTPUT
+
+    - name: Validate input file
+      if: inputs.generate-template != 'true'
+      shell: bash
+      run: |
+        CONFIG_FILE="${{ inputs.config-file }}"
+        if [[ -z "$CONFIG_FILE" ]]; then
+          echo "Error: config-file is required when generate-template is false"
+          exit 1
+        fi
+        if [[ ! -f "$CONFIG_FILE" ]]; then
+          echo "Error: Configuration file '$CONFIG_FILE' not found."
+          exit 1
+        fi
+        if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
+          echo "Error: Configuration file '$CONFIG_FILE' is not valid JSON."
+          exit 1
+        fi
+
+    - name: Setup AWS execution role
+      if: inputs.generate-template != 'true'
+      id: setup
+      shell: bash
+      run: |
+        #!/bin/bash
+        set -euo pipefail
+
+        print_status() { echo "[INFO] $1"; }
+        print_error() { echo "[ERROR] $1"; }
+        print_success() { echo "[SUCCESS] $1"; }
+
+        CONFIG_FILE="${{ inputs.config-file }}"
+        ROLE_NAME="${{ inputs.role-name }}"
+        AWS_REGION="${{ inputs.aws-region }}"
+
+        print_status "Setting up IAM role: $ROLE_NAME"
+        print_status "Using configuration file: $CONFIG_FILE"
+        print_status "AWS Region: $AWS_REGION"
+
+        # Extract account_id from config file
+        account_id=$(jq -r '.account_id' "$CONFIG_FILE")
+        if [[ "$account_id" == "null" || -z "$account_id" ]]; then
+          print_error "account_id not found in configuration file"
+          exit 1
+        fi
+        print_status "Account ID: $account_id"
+
+        # Process configuration template - replace ${account_id} placeholders
+        config=$(sed "s/\${account_id}/$account_id/g" "$CONFIG_FILE")
+
+        # Extract policies from processed configuration
+        trust_policy=$(echo "$config" | jq -c '.policies.trust')
+        inline_policy=$(echo "$config" | jq -c '.policies.inline')
+        managed_policies=$(echo "$config" | jq -r '.policies.managed[]' 2>/dev/null || echo "")
+
+        if [[ "$trust_policy" == "null" ]]; then
+          print_error "Trust policy not found in configuration file"
+          exit 1
+        fi
+
+        if [[ "$inline_policy" == "null" ]]; then
+          print_error "Inline policy not found in configuration file"
+          exit 1
+        fi
+
+        print_status "Extracted trust policy: $(echo "$trust_policy" | jq -r '.Version')"
+        print_status "Extracted inline policy with $(echo "$inline_policy" | jq -r '.Statement | length') statements"
+
+        # Check if role exists, create if not
+        print_status "Checking if role '$ROLE_NAME' exists..."
+        if aws iam get-role --role-name "$ROLE_NAME" --region "$AWS_REGION" &>/dev/null; then
+          print_status "Role '$ROLE_NAME' already exists"
+        else
+          print_status "Creating role '$ROLE_NAME'..."
+          aws iam create-role \
+            --role-name "$ROLE_NAME" \
+            --assume-role-policy-document "$trust_policy" \
+            --tags Key=created_by,Value=github-action Key=managed_by,Value=aws-execution-role-action \
+            --region "$AWS_REGION"
+          print_success "Role '$ROLE_NAME' created successfully"
+        fi
+
+        # Attach managed policies (non-destructive)
+        if [[ -n "$managed_policies" ]]; then
+          print_status "Attaching managed policies..."
+          while IFS= read -r policy_arn; do
+            if [[ -n "$policy_arn" ]]; then
+              print_status "Attaching managed policy: $policy_arn"
+              if aws iam attach-role-policy --policy-arn "$policy_arn" --role-name "$ROLE_NAME" --region "$AWS_REGION" 2>/dev/null; then
+                print_success "Attached managed policy: $policy_arn"
+              else
+                print_status "Policy already attached or failed to attach: $policy_arn"
+              fi
+            fi
+          done <<< "$managed_policies"
+        else
+          print_status "No managed policies to attach"
+        fi
+
+        # Update inline policy
+        print_status "Updating inline policy..."
+        aws iam put-role-policy \
+          --role-name "$ROLE_NAME" \
+          --policy-name "inline-policy" \
+          --policy-document "$inline_policy" \
+          --region "$AWS_REGION"
+        print_success "Inline policy updated successfully"
+
+        # Get role ARN for output
+        role_arn=$(aws iam get-role --role-name "$ROLE_NAME" --region "$AWS_REGION" --query 'Role.Arn' --output text)
+        print_success "Role setup completed. ARN: $role_arn"
+
+        # Set outputs
+        echo "role-arn=$role_arn" >> $GITHUB_OUTPUT
+        echo "role-name=$ROLE_NAME" >> $GITHUB_OUTPUT
