@@ -64,7 +64,7 @@ runs:
         extract_source() {
             local result
             result=$(grep -E '^\s*source\s*=' "$1" | grep -o '"[^"]*"' | tr -d '"' | head -1)
-            print_status "Extracted source from file: '$result'"
+            print_status "Extracted source from file: '$result'" >&2
             echo "$result"
         }
 
