@@ -96,12 +96,12 @@ runs:
         get_latest_version() {
             local repo="$1" current="$2"
             local rel tag
-            rel=$(curl -s "https://api.github.com/repos/$repo/releases/latest" | jq -r '.tag_name // empty' 2>/dev/null)
+            rel=$(curl -H "Authorization: Bearer $GITHUB_TOKEN" -s "https://api.github.com/repos/$repo/releases/latest" | jq -r '.tag_name // empty' 2>/dev/null)
             if [[ -n "$rel" ]]; then
                 echo "$rel"
                 return
             fi
-            tag=$(curl -s "https://api.github.com/repos/$repo/tags?per_page=1" | jq -r '.[0].name // empty' 2>/dev/null)
+            tag=$(curl -H "Authorization: Bearer $GITHUB_TOKEN" -s "https://api.github.com/repos/$repo/tags?per_page=1" | jq -r '.[0].name // empty' 2>/dev/null)
             echo "${tag:-$current}"
         }
 
@@ -140,11 +140,13 @@ runs:
                 IFS="|" read url current_version path <<<"$(parse_git_source "$source")"
                 repo=$(get_github_repo_info "$url")
                 if [[ -n "$repo" ]]; then
+                    print_status "Found GitHub repo: $repo"
                     latest_version=$(get_latest_version "$repo" "$current_version")
                     status=$(compare_versions "$current_version" "$latest_version")
                     results+=("$unit|${repo}${path:+//${path}}|$current_version|$latest_version|$status|git")
                     print_status "$unit: $current_version -> $latest_version ($status)"
                 else
+                    print_status "Failed to parse GitHub repo from URL: $url"
                     results+=("$unit|$url|$current_version|$current_version|up-to-date|git")
                 fi
             elif [[ $type == "local" ]]; then
