@@ -62,7 +62,10 @@ runs:
 
         # Extract source from terragrunt.hcl files
         extract_source() {
-            grep -E '^\s*source\s*=' "$1" | grep -o '"[^"]*"' | tr -d '"' | head -1
+            local result
+            result=$(grep -E '^\s*source\s*=' "$1" | grep -o '"[^"]*"' | tr -d '"' | head -1)
+            print_status "Extracted source from file: '$result'"
+            echo "$result"
         }
 
         # Parse git source URLs
