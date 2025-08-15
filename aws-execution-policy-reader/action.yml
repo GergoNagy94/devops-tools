@@ -1,0 +1,131 @@
+name: 'AWS Execution Policy Reader'
+description: 'Reads AWS IAM role policies and creates a JSON artifact'
+branding:
+  icon: 'shield'
+  color: 'orange'
+
+inputs:
+  role-name:
+    description: 'IAM role name to read policies from'
+    required: true
+    default: 'terragrunt-execution-role'
+  account-id:
+    description: 'AWS Account ID for template substitution'
+    required: true
+  environment-name:
+    description: 'Environment name (e.g., dev, prod)'
+    required: true
+
+outputs:
+  policies-file:
+    description: 'Path to the generated policies JSON file'
+    value: ${{ steps.extract.outputs.policies-file }}
+  has-role:
+    description: 'Whether the role exists'
+    value: ${{ steps.extract.outputs.has-role }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check dependencies
+      shell: bash
+      run: |
+        command -v aws >/dev/null 2>&1 || { echo "AWS CLI is required but not installed."; exit 1; }
+        command -v jq >/dev/null 2>&1 || { echo "jq is required but not installed."; exit 1; }
+
+    - name: Extract AWS role policies
+      id: extract
+      shell: bash
+      run: |
+        #!/bin/bash
+        set -euo pipefail
+
+        print_status() { echo "[INFO] $1"; }
+        print_error() { echo "[ERROR] $1"; }
+        print_success() { echo "[SUCCESS] $1"; }
+
+        ROLE_NAME="${{ inputs.role-name }}"
+        ACCOUNT_ID="${{ inputs.account-id }}"
+        ENV_NAME="${{ inputs.environment-name }}"
+        OUTPUT_FILE="aws-policies-${ENV_NAME}.json"
+
+        print_status "Extracting policies for role: $ROLE_NAME"
+        print_status "Account ID: $ACCOUNT_ID"
+        print_status "Environment: $ENV_NAME"
+
+        # Check if role exists
+        if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+            print_error "Role '$ROLE_NAME' does not exist"
+            echo "has-role=false" >> $GITHUB_OUTPUT
+            echo "policies-file=" >> $GITHUB_OUTPUT
+            exit 1
+        fi
+
+        print_status "Role exists, extracting policies..."
+
+        # Get trust policy (assume role policy)
+        trust_policy=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.AssumeRolePolicyDocument' --output json)
+        print_status "Trust policy extracted"
+
+        # Get inline policies
+        inline_policies=()
+        inline_policy_names=$(aws iam list-role-policies --role-name "$ROLE_NAME" --query 'PolicyNames' --output text)
+        
+        if [[ -n "$inline_policy_names" && "$inline_policy_names" != "None" ]]; then
+            for policy_name in $inline_policy_names; do
+                policy_doc=$(aws iam get-role-policy --role-name "$ROLE_NAME" --policy-name "$policy_name" --query 'PolicyDocument' --output json)
+                inline_policies+=("$policy_doc")
+            done
+            print_status "Found ${#inline_policies[@]} inline policy(ies)"
+        else
+            print_status "No inline policies found"
+        fi
+
+        # Get managed policies
+        managed_policy_arns=$(aws iam list-attached-role-policies --role-name "$ROLE_NAME" --query 'AttachedPolicies[].PolicyArn' --output text)
+        managed_policies=[]
+        if [[ -n "$managed_policy_arns" && "$managed_policy_arns" != "None" ]]; then
+            managed_policies=$(echo "$managed_policy_arns" | tr '\t' '\n' | jq -R . | jq -s .)
+            print_status "Found $(echo "$managed_policies" | jq length) managed policy(ies)"
+        else
+            print_status "No managed policies found"
+        fi
+
+        # Combine inline policies into one document if multiple exist
+        if [[ ${#inline_policies[@]} -gt 0 ]]; then
+            if [[ ${#inline_policies[@]} -eq 1 ]]; then
+                combined_inline_policy="${inline_policies[0]}"
+            else
+                # Merge multiple inline policies
+                statements=()
+                for policy in "${inline_policies[@]}"; do
+                    statements+=($(echo "$policy" | jq '.Statement[]'))
+                done
+                combined_inline_policy=$(jq -n --argjson statements "$(printf '%s\n' "${statements[@]}" | jq -s .)" '{Version: "2012-10-17", Statement: $statements}')
+            fi
+        else
+            combined_inline_policy='{"Version": "2012-10-17", "Statement": []}'
+        fi
+
+        # Create the final JSON structure
+        jq -n \
+          --arg account_id "$ACCOUNT_ID" \
+          --arg name "$ENV_NAME" \
+          --argjson trust "$trust_policy" \
+          --argjson inline "$combined_inline_policy" \
+          --argjson managed "$managed_policies" \
+          '{
+            account_id: $account_id,
+            name: $name,
+            policies: {
+              trust: $trust,
+              inline: $inline,
+              managed: $managed
+            }
+          }' > "$OUTPUT_FILE"
+
+        print_success "Policies extracted to: $OUTPUT_FILE"
+        
+        # Set outputs
+        echo "policies-file=$OUTPUT_FILE" >> $GITHUB_OUTPUT
+        echo "has-role=true" >> $GITHUB_OUTPUT
