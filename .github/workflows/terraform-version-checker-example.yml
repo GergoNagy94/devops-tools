@@ -28,7 +28,7 @@ jobs:
     
     - name: Run Terraform Module Version Checker
       id: run-checker
-      uses: GergoNagy94/devops-tools/terraform-version-checker@v2
+      uses: GergoNagy94/devops-tools/terraform-version-checker@main
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
