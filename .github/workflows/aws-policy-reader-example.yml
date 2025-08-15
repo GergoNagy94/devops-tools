@@ -1,4 +1,4 @@
-name: AWS Policy Reader
+name: AWS Policy Reader - Terragrunt Stack POC
 
 on:
   workflow_dispatch:
@@ -7,59 +7,70 @@ on:
         description: 'IAM role name to read'
         required: true
         default: 'terragrunt-execution-role'
-      account-id:
-        description: 'AWS Account ID'
+      environment:
+        description: 'Environment'
         required: true
-        default: '567749996660'
-      environment-name:
-        description: 'Environment name'
-        required: true
-        default: 'dev'
+        default: 'development'
         type: choice
         options:
-          - dev
-          - prod
-          - staging
+          - development
+          - production
+          - management
+          - monitoring
 
 jobs:
   read-aws-policies:
     runs-on: ubuntu-latest
-    name: Read AWS Execution Policies
+    name: Read AWS Execution Policies - ${{ matrix.env }}
+    strategy:
+      matrix:
+        include:
+          - env: development
+            account_id: '567749996660'
+          - env: production  
+            account_id: '123456789012'
+          - env: management
+            account_id: '987654321098'
+          - env: monitoring
+            account_id: '456789012345'
     
     steps:
     - name: Checkout repository
+      if: matrix.env == inputs.environment
       uses: actions/checkout@v4
     
     - name: Configure AWS credentials
+      if: matrix.env == inputs.environment
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: us-east-1
+        aws-region: eu-west-1
     
     - name: Read AWS Role Policies
+      if: matrix.env == inputs.environment
       id: read-policies
       uses: GergoNagy94/devops-tools/aws-execution-policy-reader@main
       with:
         role-name: ${{ inputs.role-name }}
-        account-id: ${{ inputs.account-id }}
-        environment-name: ${{ inputs.environment-name }}
+        account-id: ${{ matrix.account_id }}
+        environment-name: ${{ matrix.env }}
     
     - name: Upload policies artifact
-      if: steps.read-policies.outputs.has-role == 'true'
+      if: matrix.env == inputs.environment && steps.read-policies.outputs.has-role == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: aws-policies-${{ inputs.environment-name }}-${{ github.run_number }}
+        name: aws-policies-${{ matrix.env }}-${{ github.run_number }}
         path: ${{ steps.read-policies.outputs.policies-file }}
     
     - name: Display policies summary
-      if: steps.read-policies.outputs.has-role == 'true'
+      if: matrix.env == inputs.environment && steps.read-policies.outputs.has-role == 'true'
       shell: bash
       run: |
         echo "## AWS Role Policies Summary" >> $GITHUB_STEP_SUMMARY
         echo "- **Role Name**: ${{ inputs.role-name }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Account ID**: ${{ inputs.account-id }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Environment**: ${{ inputs.environment-name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Account ID**: ${{ matrix.account_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: ${{ matrix.env }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Policies File**: ${{ steps.read-policies.outputs.policies-file }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
@@ -68,4 +79,14 @@ jobs:
           inline_statements=$(jq '.policies.inline.Statement | length' "${{ steps.read-policies.outputs.policies-file }}")
           echo "- **Managed Policies**: $managed_count" >> $GITHUB_STEP_SUMMARY
           echo "- **Inline Policy Statements**: $inline_statements" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Managed Policies:" >> $GITHUB_STEP_SUMMARY
+          if [[ $managed_count -gt 0 ]]; then
+            jq -r '.policies.managed[]' "${{ steps.read-policies.outputs.policies-file }}" | while read policy; do
+              echo "- $policy" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "- None" >> $GITHUB_STEP_SUMMARY
+          fi
         fi

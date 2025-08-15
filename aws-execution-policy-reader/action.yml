@@ -1,8 +1,5 @@
 name: 'AWS Execution Policy Reader'
 description: 'Reads AWS IAM role policies and creates a JSON artifact'
-branding:
-  icon: 'shield'
-  color: 'orange'
 
 inputs:
   role-name:
