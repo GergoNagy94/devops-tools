@@ -18,6 +18,10 @@ on:
           - management
           - monitoring
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   read-aws-policies:
     runs-on: ubuntu-latest
@@ -43,8 +47,7 @@ jobs:
       if: matrix.env == inputs.environment
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        role-to-assume: arn:aws:iam::${{ matrix.account_id }}:role/github-actions-policy-reader
         aws-region: eu-west-1
     
     - name: Read AWS Role Policies
