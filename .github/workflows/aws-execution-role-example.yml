@@ -23,7 +23,7 @@ jobs:
 
       - name: Setup AWS execution role
         id: setup-role
-        uses: GergoNagy94/devops-tools/aws-execution-role@v1.0.0
+        uses: GergoNagy94/devops-tools/aws-execution-role@v2
         with:
           config-file: ${{ github.event.inputs.config-file }}
 
