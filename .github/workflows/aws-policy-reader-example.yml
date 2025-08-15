@@ -1,4 +1,4 @@
-name: AWS Policy Reader - Terragrunt Stack POC
+name: AWS Policy Reader
 
 on:
   workflow_dispatch:
@@ -78,18 +78,9 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         
         if [[ -f "${{ steps.read-policies.outputs.policies-file }}" ]]; then
-          managed_count=$(jq '.policies.managed | length' "${{ steps.read-policies.outputs.policies-file }}")
-          inline_statements=$(jq '.policies.inline.Statement | length' "${{ steps.read-policies.outputs.policies-file }}")
-          echo "- **Managed Policies**: $managed_count" >> $GITHUB_STEP_SUMMARY
-          echo "- **Inline Policy Statements**: $inline_statements" >> $GITHUB_STEP_SUMMARY
-          
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Managed Policies:" >> $GITHUB_STEP_SUMMARY
-          if [[ $managed_count -gt 0 ]]; then
-            jq -r '.policies.managed[]' "${{ steps.read-policies.outputs.policies-file }}" | while read policy; do
-              echo "- $policy" >> $GITHUB_STEP_SUMMARY
-            done
-          else
-            echo "- None" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "### Artifact Content:" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat "${{ steps.read-policies.outputs.policies-file }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
         fi
