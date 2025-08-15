@@ -40,3 +40,20 @@ jobs:
       with:
         name: terraform-versions-${{ github.run_number }}
         path: ${{ steps.run-checker.outputs.report-file }}
+    
+    - name: Display module version summary
+      shell: bash
+      run: |
+        echo "## Terraform Module Version Report" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Show Outdated Only**: ${{ inputs.outdated-only }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Outdated Modules Found**: ${{ steps.run-checker.outputs.outdated-count }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Report File**: ${{ steps.run-checker.outputs.report-file }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ -f "${{ steps.run-checker.outputs.report-file }}" ]]; then
+          echo "### Report Content:" >> $GITHUB_STEP_SUMMARY
+          echo '```yaml' >> $GITHUB_STEP_SUMMARY
+          cat "${{ steps.run-checker.outputs.report-file }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
